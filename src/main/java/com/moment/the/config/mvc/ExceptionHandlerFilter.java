@@ -35,6 +35,7 @@ public class ExceptionHandlerFilter extends OncePerRequestFilter {
         }catch (UserNotFoundException e){
             setExceptionRes(HttpStatus.BAD_REQUEST, res, exceptionAdvice.userNotFoundException(req, e));
         } catch (Exception e){
+            log.error("알 수 없는 에러 발생", e);
             setExceptionRes(HttpStatus.INTERNAL_SERVER_ERROR, res, exceptionAdvice.defaultException(req, e));
         }
 

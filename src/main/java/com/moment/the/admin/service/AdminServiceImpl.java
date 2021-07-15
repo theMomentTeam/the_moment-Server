@@ -48,7 +48,7 @@ public class AdminServiceImpl implements AdminService {
         final String accessToken = jwtUtil.generateAccessToken(adminDomain.getAdminId());
         final String refreshJwt = jwtUtil.generateRefreshToken(adminDomain.getAdminId());
         // token 만료 기간 설정
-        redisUtil.setDataExpire(adminDomain.getUsername(), refreshJwt, jwtUtil.REFRESH_TOKEN_VALIDATION_SECOND);
+        redisUtil.setDataExpire(refreshJwt, adminDomain.getUsername(), JwtUtil.REFRESH_TOKEN_EXPIRATION_TIME);
         Map<String ,String> map = new HashMap<>();
         map.put("id", adminDomain.getAdminId());
         map.put("accessToken", accessToken); // accessToken 반환

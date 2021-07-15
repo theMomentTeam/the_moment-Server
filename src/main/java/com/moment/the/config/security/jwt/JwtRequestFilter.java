@@ -1,12 +1,12 @@
 package com.moment.the.config.security.jwt;
 
 import com.moment.the.config.security.auth.MyUserDetailsService;
-import com.moment.the.exceptionAdvice.exception.AccessTokenExpiredException;
 import com.moment.the.exceptionAdvice.exception.InvalidTokenException;
 import com.moment.the.exceptionAdvice.exception.UserNotFoundException;
-import com.moment.the.util.RedisUtil;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.MalformedJwtException;
+import io.jsonwebtoken.UnsupportedJwtException;
+import io.jsonwebtoken.security.SignatureException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -28,55 +28,87 @@ import java.io.IOException;
 public class JwtRequestFilter extends OncePerRequestFilter {
     private final MyUserDetailsService myUserDetailsService;
     private final JwtUtil jwtUtil;
-    private final RedisUtil redisUtil;
 
     @Override
     protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain filterChain) throws ServletException, IOException {
-        String accessJwt = req.getHeader("Authorization");
-        String refreshJwt = req.getHeader("RefreshToken");
+        String accessToken = req.getHeader("Authorization");
+        String refreshToken = req.getHeader("RefreshToken");
 
-        String userEmail = null;
-        String refreshEmail = null;
+        String userEmail;
 
-        // accessToken 검사
-        try{
-            if(accessJwt != null && jwtUtil.getUserTokenType(accessJwt).equals(JwtUtil.ACCESS_TOKEN_NAME))
-                userEmail = jwtUtil.getUserEmail(accessJwt);
+        // Access Token이 null이면 검증할 필요가 없다.
+        if (accessToken != null) {
+            log.debug("=== accessToken 검증 시작 ===");
 
-            if(userEmail != null){
-                System.out.println("jwt userEmail " + userEmail);
-                UserDetails userDetails = myUserDetailsService.loadUserByUsername(userEmail);
+            userEmail = accessTokenExtractEmail(accessToken);
+            if(userEmail != null)
+                registerUserInfoInSecurityContext(userEmail, req);
 
-                //토큰 발급후 유저 정보 확인
-                try{
+            // Access Token이 만료되고 Refresh Token이 존재해야지 새로운 AccessToken을 반한한다.
+            if(jwtUtil.isTokenExpired(accessToken) && refreshToken != null){
+                log.debug("=== AccessToken 만료 ===");
 
-                    if(jwtUtil.validateToken(accessJwt, userDetails)){
-                        UsernamePasswordAuthenticationToken usernamePasswordAuthenticationToken = new UsernamePasswordAuthenticationToken(userDetails,null,userDetails.getAuthorities());
-                        usernamePasswordAuthenticationToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(req));
-                        SecurityContextHolder.getContext().setAuthentication(usernamePasswordAuthenticationToken);
-                    }
+                String newAccessToken = generateNewAccessToken(refreshToken);
+                res.addHeader("JwtToken", newAccessToken);
 
-                }catch (NullPointerException e){
-                    throw new UserNotFoundException();
-                }
+                log.debug("=== AccessToken 발급 ===");
             }
-        //accessToken 이 만료되었을때 refreshToken 을 사용하여 accessToken 재발급한다.
-        }catch (ExpiredJwtException e){
-            if(refreshJwt != null){
-                refreshEmail = jwtUtil.getUserEmail(refreshJwt);
-                if(refreshJwt.equals(redisUtil.getData(refreshEmail))){
-                    String newJwt = jwtUtil.generateAccessToken(refreshEmail);
-                    res.addHeader("JwtToken", newJwt);
-                }
-            }else{
-                throw new AccessTokenExpiredException();
-            }
-        } catch(MalformedJwtException e){
-            throw new InvalidTokenException();
-        } catch(IllegalArgumentException e){ //헤더에 토큰이 없으면 NPE 발생 하여 추가하였다. 추가적인 의미는 없다.
         }
+        filterChain.doFilter(req, res);
+    }
 
-        filterChain.doFilter(req,res); //필터 체인을 따라 계속 다음에 존재하는 필터로 이동한다.
+    /**
+     * accessToken에서 userEmail claim 값을 추출한다.
+     *
+     * @param accessToken Access Token
+     * @return userEmail - accessToken에서 정상적으로 email를 추출할때 user email을 반한한다.
+     * @throws InvalidTokenException - accessToken이 null이 아니고 올바르지 않을때 발생한다.
+     * @author 정시원
+     */
+    private String accessTokenExtractEmail(String accessToken) {
+        try {
+            if(jwtUtil.getTokenType(accessToken).equals(JwtUtil.TokenType.REFRESH_TOKEN.value))
+                return accessToken;
+            else
+                return null;
+        } catch (IllegalArgumentException | ExpiredJwtException e) {
+            return null;
+        } catch (MalformedJwtException | UnsupportedJwtException | SignatureException e ) {
+            throw new InvalidTokenException();
+        }
+    }
 
+    /**
+     * user email로 사용자의 유무를 판단해 SecurityContext에 유저를 등록한다.
+     *
+     * @param userEmail - String
+     * @param req       - HttpServletRequest
+     * @throws UserNotFoundException - 해당 사용자가 없을 경우 throw 된다.
+     * @author 정시원
+     */
+    private void registerUserInfoInSecurityContext(String userEmail, HttpServletRequest req) {
+        try {
+            UserDetails userDetails = myUserDetailsService.loadUserByUsername(userEmail);
+
+            UsernamePasswordAuthenticationToken usernamePasswordAuthenticationToken = new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
+            usernamePasswordAuthenticationToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(req));
+            SecurityContextHolder.getContext().setAuthentication(usernamePasswordAuthenticationToken);
+        } catch (NullPointerException e) {
+            throw new UserNotFoundException();
+        }
+    }
+
+    /**
+     * @param refreshToken - 유저가 가지고 있는 refreshToken
+     * @return newAccessToken - 새로만든 AccessToken을 발급합니다.
+     * @throws InvalidTokenException RefreshToken이 올바르지 않을때 throws된다.
+     * @author 정시원
+     */
+    private String generateNewAccessToken(String refreshToken) {
+        try {
+            return jwtUtil.generateAccessToken(jwtUtil.getUserEmail(refreshToken));
+        } catch (IllegalArgumentException | UnsupportedJwtException | SignatureException | MalformedJwtException | ExpiredJwtException e) {
+            throw new InvalidTokenException();
+        }
     }
 }
